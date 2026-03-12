@@ -32,7 +32,29 @@ class UMSAgentGateway:
         # 3. Get last message (the last always will be the user message) and make augmentation with additional instructions
         # 4. Call UMS Agent
         # 5. return assistant message
-        raise NotImplementedError()
+        conversation_id = self.__get_ums_conversation_id(request=request)
+        if not conversation_id:
+            conversation_id = await self.__create_ums_conversation()
+            print(f"Created new conversation on UMS agent side with id: {conversation_id}")
+
+        last_user_message = request.messages[-1].content
+        if additional_instructions:
+            last_user_message = f"{last_user_message}\n\n{additional_instructions}"
+
+        agent_response = await self.__call_ums_agent(
+            conversation_id=conversation_id,
+            user_message=last_user_message, # type: ignore
+            stage=stage
+        )
+
+        choice.set_state({
+            _UMS_CONVERSATION_ID: conversation_id
+        })
+
+        return Message(
+            role=Role.ASSISTANT,
+            content=agent_response,
+        )
 
 
     def __get_ums_conversation_id(self, request: Request) -> Optional[str]:
@@ -40,7 +62,14 @@ class UMSAgentGateway:
         #TODO:
         # Iterate through message history, check if custom content with state is present and if it contains
         # _UMS_CONVERSATION_ID, if yes then return it, otherwise return None
-        raise NotImplementedError()
+        for message in request.messages:
+            if (
+                message.custom_content and
+                message.custom_content.state and
+                _UMS_CONVERSATION_ID in message.custom_content.state
+            ):
+                return message.custom_content.state[_UMS_CONVERSATION_ID]
+        return None
 
     async def __create_ums_conversation(self) -> str:
         """Create a new conversation on UMS agent side"""
@@ -48,7 +77,17 @@ class UMSAgentGateway:
         # 1. Create async context manager with httpx.AsyncClient()
         # 2. Make POST request to create conversation https://github.com/khshanovskyi/ai-dial-ums-ui-agent/blob/completed/agent/app.py#L159
         # 3. Get response json and return `id` from it
-        raise NotImplementedError()
+        async_context_manager = httpx.AsyncClient()
+        async with async_context_manager as client:
+            response = await client.post(
+                f"{self.ums_agent_endpoint}/conversations", 
+                json={"title": "UMS Agent Conversation"}, 
+                timeout=30
+            )
+
+            response.raise_for_status()
+            conversation_data = response.json()
+            return conversation_data["id"]
 
     async def __call_ums_agent(
             self,
@@ -75,4 +114,44 @@ class UMSAgentGateway:
         #       - If in result you have [DONE] - that means that streaming is finished an you can break the loop
         #       - Make dict from json
         #       - Get content, accumulate it to return after and append content chunks to the stage
-        raise NotImplementedError()
+        async_context_manager = httpx.AsyncClient()
+        async with async_context_manager as client:
+            response = await client.post(
+                f"{self.ums_agent_endpoint}/conversations/{conversation_id}/chat",
+                json={"message": {"role": "user","content": user_message}, "stream": True},
+                timeout=30
+            )
+
+            response.raise_for_status()
+
+            content = ""
+            async for line in response.aiter_lines():
+                if not line.startswith('data:'):
+                    print(f"Unexpected line format: {line}")
+                    continue
+
+                data = line[len('data: '):]
+
+                if data == "[DONE]":
+                    break
+
+                if not line.startswith("data: "):
+                    continue
+
+                
+                try:
+                    chunk = json.loads(data)
+                    if 'conversation_id' in chunk:
+                        continue
+
+                    if 'choices' in chunk and len(chunk["choices"]) > 0:
+                        delta = chunk["choices"][0]["delta"]
+                        
+                        if 'content' in delta:
+                            content += delta["content"]
+                            stage.append_content(delta["content"])
+
+                except json.JSONDecodeError:
+                    print(f"Failed to parse JSON from line: {line}")
+                    continue
+            return content

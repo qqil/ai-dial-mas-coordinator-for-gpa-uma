@@ -22,7 +22,13 @@ class MASCoordinatorApplication(ChatCompletion):
         #TODO:
         # 1. Create single choice with context manager
         # 2. Create MASCoordinator and handle request
-        raise NotImplementedError()
+        with response.create_single_choice() as choice:
+            mas_coordinator = MASCoordinator(
+                endpoint=DIAL_ENDPOINT,
+                ums_agent_endpoint=UMS_AGENT_ENDPOINT,
+                deployment_name=DEPLOYMENT_NAME,
+            )
+            await mas_coordinator.handle_request(request=request, choice=choice)
 
 
 
@@ -34,3 +40,8 @@ class MASCoordinatorApplication(ChatCompletion):
 #       - impl=agent_app
 # 4. Run it with uvicorn: `uvicorn.run({CREATED_DIAL_APP}, port=8055, host="0.0.0.0")`
 
+app = DIALApp()
+mas_coordinator_app = MASCoordinatorApplication()
+app.add_chat_completion(deployment_name="mas-coordinator", impl=mas_coordinator_app)
+
+uvicorn.run(app, port=8055, host="0.0.0.0")
